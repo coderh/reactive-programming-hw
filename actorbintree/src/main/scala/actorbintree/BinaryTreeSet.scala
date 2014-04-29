@@ -70,6 +70,19 @@ class BinaryTreeSet extends Actor {
   // optional
   /** Accepts `Operation` and `GC` messages. */
   val normal: Receive = {
+
+    case GC => {
+      val newRoot = createRoot
+      root ! CopyTo(newRoot)
+      context become {
+        case op: Operation => pendingQueue.enqueue(op)
+        case CopyFinished =>
+          root = newRoot
+          pendingQueue.foreach(root ! _)
+          context.unbecome
+      }
+    }
+
     case Insert(requester, id, elem) => root ! Insert(requester, id, elem)
 
     case Contains(requester, id, elem) => root ! Contains(requester, id, elem)
@@ -112,6 +125,27 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
   // optional
   /** Handles `Operation` messages and `CopyTo` requests. */
   val normal: Receive = {
+
+    case CopyTo(treeNode: ActorRef) => {
+
+      var subnodeSet = Set[ActorRef]()
+
+      if (subtrees.contains(Left)) {
+        subtrees(Left) ! CopyTo(treeNode)
+        subnodeSet += subtrees(Left)
+      }
+
+      if (subtrees.contains(Right)) {
+        subtrees(Right) ! CopyTo(treeNode)
+        subnodeSet += subtrees(Right)
+      }
+
+      if (!this.removed) {
+        treeNode ! Insert(self, -1, this.elem)
+      }
+
+      context become copying(subnodeSet, false)
+    }
 
     case Insert(requester, id, elem) =>
       if (elem < this.elem) {
@@ -173,6 +207,24 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
    * `expected` is the set of ActorRefs whose replies we are waiting for,
    * `insertConfirmed` tracks whether the copy of this node to the new tree has been confirmed.
    */
-  def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = ???
+  def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = {
+
+    case CopyFinished =>
+      val newExpected = expected - sender
+      if (newExpected.isEmpty && insertConfirmed) {
+        context.parent ! CopyFinished
+      } else {
+        context become copying(newExpected, insertConfirmed)
+      }
+
+    case OperationFinished(_) => {
+
+      if (expected.isEmpty)
+        context.parent ! CopyFinished
+      else
+        context become copying(expected, true)
+    }
+
+  }
 
 }
