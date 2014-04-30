@@ -63,8 +63,8 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
   }
   
   test("GC sanity check") {
+    
     val topNode = system.actorOf(Props[BinaryTreeSet])
-
 
     topNode ! Insert(testActor, id = 2, 5)
     topNode ! Contains(testActor, id = 3, 5)
@@ -76,34 +76,35 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
     expectMsg(OperationFinished(4))
     expectMsg(ContainsResult(5, true))
     
-    topNode ! Insert(testActor, id = 6, 4)
-    topNode ! Contains(testActor, id = 7, 4)
-    expectMsg(OperationFinished(6))
-    expectMsg(ContainsResult(7, true))
-    
-    topNode ! Insert(testActor, id = 8, 6)
-    topNode ! Contains(testActor, id = 9, 6)
-    expectMsg(OperationFinished(8))
-    expectMsg(ContainsResult(9, true))
-    
-    topNode ! Insert(testActor, id = 10, -4)
-    topNode ! Contains(testActor, id = 11, -4)
-    expectMsg(OperationFinished(10))
-    expectMsg(ContainsResult(11, true))
-    
-    topNode ! Insert(testActor, id = 12, -6)
-    topNode ! Contains(testActor, id = 13, -6)
-    expectMsg(OperationFinished(12))
-    expectMsg(ContainsResult(13, true))
-    
-    topNode ! Remove(testActor, id = 14, -5)
-    topNode ! Contains(testActor, id = 15, -5)
-    expectMsg(OperationFinished(14))
-    expectMsg(ContainsResult(15, false))
+//    topNode ! Insert(testActor, id = 6, 4)
+//    topNode ! Contains(testActor, id = 7, 4)
+//    expectMsg(OperationFinished(6))
+//    expectMsg(ContainsResult(7, true))
+//    
+//    topNode ! Insert(testActor, id = 8, 6)
+//    topNode ! Contains(testActor, id = 9, 6)
+//    expectMsg(OperationFinished(8))
+//    expectMsg(ContainsResult(9, true))
+//    
+//    topNode ! Insert(testActor, id = 10, -4)
+//    topNode ! Contains(testActor, id = 11, -4)
+//    expectMsg(OperationFinished(10))
+//    expectMsg(ContainsResult(11, true))
+//    
+//    topNode ! Insert(testActor, id = 12, -6)
+//    topNode ! Contains(testActor, id = 13, -6)
+//    expectMsg(OperationFinished(12))
+//    expectMsg(ContainsResult(13, true))
+//    
+//    topNode ! Remove(testActor, id = 14, -5)
+//    topNode ! Contains(testActor, id = 15, -5)
+//    expectMsg(OperationFinished(14))
+//    expectMsg(ContainsResult(15, false))
     
     topNode ! GC
+    topNode ! Insert(testActor, id = 17, 6)
     topNode ! Contains(testActor, id = 16, -5)
-    expectMsg(OperationFinished(16))
+    expectMsg(ContainsResult(16, true))
     
   }
 
