@@ -74,10 +74,11 @@ class BinaryTreeSet extends Actor {
     case GC => {
       val newRoot = createRoot
       root ! CopyTo(newRoot)
-      context become garbageCollecting(createRoot)
+      context become garbageCollecting(newRoot)
     }
 
-    case Insert(requester, id, elem) => root ! Insert(requester, id, elem)
+    case Insert(requester, id, elem) =>
+      root ! Insert(requester, id, elem)
 
     case Contains(requester, id, elem) => root ! Contains(requester, id, elem)
 
@@ -92,17 +93,14 @@ class BinaryTreeSet extends Actor {
    */
   def garbageCollecting(newRoot: ActorRef): Receive = {
     case op: Operation =>
-      println
-      println("Enqueued")
-      pendingQueue.enqueue(op)
+      pendingQueue = pendingQueue.enqueue(op)
     case CopyFinished =>
-      println
-      println("Reached")
+      // root ! PoisonPill
+      context stop root
       root = newRoot
-      context become normal
       pendingQueue.foreach(root ! _)
-      
-      
+      pendingQueue = Queue.empty[Operation]
+      context unbecome
   }
 }
 
@@ -144,7 +142,8 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
         if (!this.removed) {
           treeNode ! Insert(self, -1, this.elem)
         }
-        context become copying(subnodeSet, this.removed)
+
+        context become copying(subNodeSet, this.removed)
       }
     }
 
@@ -210,25 +209,21 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
     case CopyFinished =>
       val newExpected = expected - sender
       if (newExpected.isEmpty && insertConfirmed) {
-        println
-        println("CopyFinished case sends CopyFinished on " + this.elem)
         context.parent ! CopyFinished
+        context stop self
+        //self ! PoisonPill
       } else {
         context become copying(newExpected, insertConfirmed)
       }
 
     case OperationFinished(_) => {
-
       if (expected.isEmpty) {
-        println
-        println("OperationFinished case sends CopyFinished")
         context.parent ! CopyFinished
+        //self ! PoisonPill
+        context stop self
       } else {
         context become copying(expected, true)
       }
-
     }
-
   }
-
 }

@@ -10,6 +10,7 @@ import org.scalatest.matchers.ShouldMatchers
 import scala.util.Random
 import scala.concurrent.duration._
 import org.scalatest.FunSuite
+import scala.language.postfixOps
 
 class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSuite with ShouldMatchers with BeforeAndAfterAll with ImplicitSender {
 
@@ -55,57 +56,31 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
 
     expectMsg(OperationFinished(2))
     expectMsg(ContainsResult(3, true))
-    
+
     topNode ! Remove(testActor, id = 4, 1)
     topNode ! Contains(testActor, id = 5, 1)
     expectMsg(OperationFinished(4))
     expectMsg(ContainsResult(5, false))
   }
-  
-  test("GC sanity check") {
-    
-    val topNode = system.actorOf(Props[BinaryTreeSet])
 
-    topNode ! Insert(testActor, id = 2, 5)
-    topNode ! Contains(testActor, id = 3, 5)
-    expectMsg(OperationFinished(2))
-    expectMsg(ContainsResult(3, true))
-    
-    topNode ! Insert(testActor, id = 4, -5)
-    topNode ! Contains(testActor, id = 5, -5)
-    expectMsg(OperationFinished(4))
-    expectMsg(ContainsResult(5, true))
-    
-//    topNode ! Insert(testActor, id = 6, 4)
-//    topNode ! Contains(testActor, id = 7, 4)
-//    expectMsg(OperationFinished(6))
-//    expectMsg(ContainsResult(7, true))
-//    
-//    topNode ! Insert(testActor, id = 8, 6)
-//    topNode ! Contains(testActor, id = 9, 6)
-//    expectMsg(OperationFinished(8))
-//    expectMsg(ContainsResult(9, true))
-//    
-//    topNode ! Insert(testActor, id = 10, -4)
-//    topNode ! Contains(testActor, id = 11, -4)
-//    expectMsg(OperationFinished(10))
-//    expectMsg(ContainsResult(11, true))
-//    
-//    topNode ! Insert(testActor, id = 12, -6)
-//    topNode ! Contains(testActor, id = 13, -6)
-//    expectMsg(OperationFinished(12))
-//    expectMsg(ContainsResult(13, true))
-//    
-//    topNode ! Remove(testActor, id = 14, -5)
-//    topNode ! Contains(testActor, id = 15, -5)
-//    expectMsg(OperationFinished(14))
-//    expectMsg(ContainsResult(15, false))
-    
+  test("GC sanity check") {
+
+    val topNode = system.actorOf(Props[BinaryTreeSet])
+    topNode ! Remove(testActor, 0, 7)
+    topNode ! Insert(testActor, 1, 21)
+    topNode ! Contains(testActor, 2, 54)
+    topNode ! Contains(testActor, 3, 49)
     topNode ! GC
-    topNode ! Insert(testActor, id = 17, 6)
-    topNode ! Contains(testActor, id = 16, -5)
-    expectMsg(ContainsResult(16, true))
-    
+    topNode ! Insert(testActor, 4, 54)
+    topNode ! Insert(testActor, 5, 47)
+
+    expectMsg(OperationFinished(0))
+    expectMsg(OperationFinished(1))
+    expectMsg(ContainsResult(2, false))
+    expectMsg(ContainsResult(3, false))
+    expectMsg(OperationFinished(4))
+    expectMsg(OperationFinished(5))
+
   }
 
   test("instruction example") {
@@ -130,7 +105,6 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
     verify(requester, ops, expectedReplies)
   }
 
-  /*
   test("behave identically to built-in set (includes GC)") {
     val rnd = new Random()
     def randomOperations(requester: ActorRef, count: Int): Seq[Operation] = {
@@ -168,11 +142,14 @@ class BinaryTreeSuite(_system: ActorSystem) extends TestKit(_system) with FunSui
     val ops = randomOperations(requester.ref, count)
     val expectedReplies = referenceReplies(ops)
 
+    println(ops mkString ("\n"))
+    println(expectedReplies mkString ("\n"))
+
     ops foreach { op =>
       topNode ! op
       if (rnd.nextDouble() < 0.1) topNode ! GC
     }
     receiveN(requester, ops, expectedReplies)
   }
-  //*/
+
 }
