@@ -39,7 +39,13 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   /*
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
    */
-  
+
+  // TODO:
+  import Arbiter._
+  arbiter ! Join
+
+  var expectedSeq = 0L
+
   var kv = Map.empty[String, String]
   // a map from secondary replicas to replicators
   var secondaries = Map.empty[ActorRef, ActorRef]
@@ -47,18 +53,51 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   var replicators = Set.empty[ActorRef]
 
   def receive = {
-    case JoinedPrimary   => context.become(leader)
+    case JoinedPrimary => context.become(leader)
     case JoinedSecondary => context.become(replica)
   }
 
   /* TODO Behavior for  the leader role. */
   val leader: Receive = {
-    case _ =>
+    case Insert(key, value, id) =>
+      try {
+        kv += key -> value
+        sender ! OperationAck(id)
+      } catch {
+        case e: Exception => sender ! OperationFailed(id)
+      }
+
+    case Remove(key, id) =>
+      try {
+        kv -= key
+        sender ! OperationAck(id)
+      } catch {
+        case e: Exception => sender ! OperationFailed(id)
+      }
+
+    case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
   }
 
   /* TODO Behavior for the replica role. */
   val replica: Receive = {
-    case _ =>
+    case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
+    case Snapshot(key, valueOption, seq) =>
+      if (seq == expectedSeq) {
+        try {
+          valueOption match {
+            case Some(v) => kv += key -> v
+            case None => kv -= key
+          }
+          sender ! SnapshotAck(key, seq)
+        } catch {
+          case e: Exception => throw e
+        }
+        expectedSeq = scala.math.max(seq + 1, expectedSeq)
+      } else if (seq < expectedSeq) {
+        sender ! SnapshotAck(key, seq)
+        expectedSeq = scala.math.max(seq + 1, expectedSeq)
+      }
+
   }
 
 }

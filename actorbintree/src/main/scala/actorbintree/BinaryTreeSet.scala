@@ -100,7 +100,7 @@ class BinaryTreeSet extends Actor {
       root = newRoot
       pendingQueue.foreach(root ! _)
       pendingQueue = Queue.empty[Operation]
-      context unbecome
+      context become normal
   }
 }
 
