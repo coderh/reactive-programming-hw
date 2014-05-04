@@ -36,10 +36,24 @@ class Replicator(val replica: ActorRef) extends Actor {
     ret
   }
 
+  val cancelList = acks map {
+    case (seq, (_, replic)) =>
+      import context.dispatcher
+      context.system.scheduler.schedule(100 millis, 100 millis, replica, Snapshot(replic.key, replic.valueOption, seq))
+  }
+
+  override def postStop() = cancelList foreach (_.cancel)
+
   /* TODO Behavior for the Replicator. */
   def receive: Receive = {
-    case Replicate(key, valueOption, id) => replica ! Snapshot(key, valueOption, nextSeq)
-    case SnapshotAck(key, seq) => replica ! Replicated(key, seq)
+    case replic @ Replicate(key, valueOption, id) =>
+      val seq = nextSeq
+      acks += seq -> (sender, replic)
+      replica ! Snapshot(key, valueOption, seq)
+    case SnapshotAck(key, seq) =>
+      val (sender, replic) = acks(seq)
+      sender ! Replicated(key, replic.id)
+      acks -= seq
   }
 
 }
