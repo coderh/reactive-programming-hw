@@ -43,6 +43,14 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   // TODO:
   import Arbiter._
   arbiter ! Join
+  val persistActor = context.actorOf(persistenceProps)
+
+  override val supervisorStrategy = OneForOneStrategy() {
+    case _: PersistenceException => Restart
+  }
+  
+  implicit val timeout = Timeout(5 seconds)
+  
 
   var expectedSeq = 0L
 
@@ -88,15 +96,18 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
             case Some(v) => kv += key -> v
             case None => kv -= key
           }
-          sender ! SnapshotAck(key, seq)
+          secondaries += self -> sender
+          persistActor ! Persist(key, valueOption, seq)
+          expectedSeq = scala.math.max(seq + 1, expectedSeq)
         } catch {
           case e: Exception => throw e
         }
-        expectedSeq = scala.math.max(seq + 1, expectedSeq)
+
       } else if (seq < expectedSeq) {
         sender ! SnapshotAck(key, seq)
         expectedSeq = scala.math.max(seq + 1, expectedSeq)
       }
+    case Persisted(key, seq) => secondaries(self) ! SnapshotAck(key, seq)
 
   }
 

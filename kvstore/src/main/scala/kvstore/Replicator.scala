@@ -36,20 +36,27 @@ class Replicator(val replica: ActorRef) extends Actor {
     ret
   }
 
-  val cancelList = acks map {
-    case (seq, (_, replic)) =>
-      import context.dispatcher
-      context.system.scheduler.schedule(100 millis, 100 millis, replica, Snapshot(replic.key, replic.valueOption, seq))
-  }
+  import context.dispatcher
+  val tick =
+    context.system.scheduler.schedule(100 millis, 100 millis, self, "repeat")
 
-  override def postStop() = cancelList foreach (_.cancel)
+  override def postStop() = tick.cancel()
 
   /* TODO Behavior for the Replicator. */
   def receive: Receive = {
+    case "repeat" =>
+      if (!acks.isEmpty) {
+        acks foreach {
+          case (seq, (_, request)) =>
+            replica ! Snapshot(request.key, request.valueOption, seq)
+        }
+      }
+      
     case replic @ Replicate(key, valueOption, id) =>
       val seq = nextSeq
       acks += seq -> (sender, replic)
       replica ! Snapshot(key, valueOption, seq)
+      
     case SnapshotAck(key, seq) =>
       val (sender, replic) = acks(seq)
       sender ! Replicated(key, replic.id)
