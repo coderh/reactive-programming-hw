@@ -40,18 +40,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
    */
 
-  // TODO:
-  import Arbiter._
-  arbiter ! Join
-  val persistActor = context.actorOf(persistenceProps)
-
-  override val supervisorStrategy = OneForOneStrategy() {
-    case _: PersistenceException => Restart
-  }
-  
-  implicit val timeout = Timeout(5 seconds)
-  
-
   var expectedSeq = 0L
 
   var kv = Map.empty[String, String]
@@ -65,12 +53,49 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case JoinedSecondary => context.become(replica)
   }
 
+  // TODO:
+  import Arbiter._
+  arbiter ! Join
+  val persistActor = context.actorOf(persistenceProps)
+
+  override val supervisorStrategy = OneForOneStrategy() {
+    case _: PersistenceException => Restart
+  }
+
+  import context.dispatcher
+  val tick =
+    context.system.scheduler.schedule(100 millis, 100 millis, self, "repeat")
+
+  override def postStop() = tick.cancel()
+
+  var persistAcks = Map.empty[Long, (ActorRef, Persist)]
+  var cancellables = Map.empty[Long, akka.actor.Cancellable]
+
   /* TODO Behavior for  the leader role. */
   val leader: Receive = {
+    case "repeat" =>
+      if (!persistAcks.isEmpty) {
+        persistAcks foreach {
+          case (seq, (_, persist)) =>
+            persistActor ! persist
+        }
+      }
+
+    case Replicas(replicas) =>
+      replicas filter (rep => !secondaries.contains(rep)) foreach {
+        case af: ActorRef =>
+          val newReplicator = context.actorOf(Props(new Replicator(af)))
+          secondaries += af -> newReplicator
+          replicators += newReplicator
+      }
+
     case Insert(key, value, id) =>
       try {
         kv += key -> value
-        sender ! OperationAck(id)
+        val p = Persist(key, Some(value), id)
+        persistActor ! p
+        persistAcks += id -> (sender, p)
+        cancellables += id -> context.system.scheduler.schedule(1000 millis, 1 seconds, sender, OperationFailed(id))
       } catch {
         case e: Exception => sender ! OperationFailed(id)
       }
@@ -78,16 +103,40 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case Remove(key, id) =>
       try {
         kv -= key
-        sender ! OperationAck(id)
+        val p = Persist(key, None, id)
+        persistActor ! p
+        persistAcks += id -> (sender, p)
+        cancellables += id -> context.system.scheduler.schedule(1000 millis, 1 seconds, sender, OperationFailed(id))
       } catch {
         case e: Exception => sender ! OperationFailed(id)
       }
 
     case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
+
+    case Persisted(key, id) =>
+      cancellables.get(id) match {
+        case Some(x) =>
+          x.cancel()
+          cancellables -= id
+        case None =>
+      }
+      persistAcks.get(id) match {
+        case Some((sender, _)) =>
+          sender ! OperationAck(id)
+          persistAcks -= id
+        case None =>
+      }
   }
 
   /* TODO Behavior for the replica role. */
   val replica: Receive = {
+    case "repeat" =>
+      if (!persistAcks.isEmpty) {
+        persistAcks foreach {
+          case (seq, (_, persist)) =>
+            persistActor ! persist
+        }
+      }
     case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
     case Snapshot(key, valueOption, seq) =>
       if (seq == expectedSeq) {
@@ -96,18 +145,26 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
             case Some(v) => kv += key -> v
             case None => kv -= key
           }
-          secondaries += self -> sender
-          persistActor ! Persist(key, valueOption, seq)
+          implicit val timeout = Timeout(1 seconds)
+          val f = persistActor ? Persist(key, valueOption, seq)
+          f pipeTo self
+          persistAcks += seq -> (sender, Persist(key, valueOption, seq))
           expectedSeq = scala.math.max(seq + 1, expectedSeq)
         } catch {
           case e: Exception => throw e
         }
-
       } else if (seq < expectedSeq) {
         sender ! SnapshotAck(key, seq)
         expectedSeq = scala.math.max(seq + 1, expectedSeq)
       }
-    case Persisted(key, seq) => secondaries(self) ! SnapshotAck(key, seq)
+    case Persisted(key, seq) =>
+      persistAcks.get(seq) match {
+        case Some((replicator, persist)) =>
+          replicator ! SnapshotAck(key, seq)
+          persistAcks -= seq
+        case None =>
+      }
+    case _: akka.actor.Status.Failure => println("Timeout \n\n\n")
 
   }
 
