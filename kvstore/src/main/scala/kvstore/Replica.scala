@@ -71,18 +71,37 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   var persistAcks = Map.empty[Long, (ActorRef, Persist)]
   var cancellables = Map.empty[Long, akka.actor.Cancellable]
 
+  var primaryPersisted: Boolean = false
+
   /* TODO Behavior for  the leader role. */
-  val leader: Receive = {
-    case "repeat" =>
-      if (!persistAcks.isEmpty) {
-        persistAcks foreach {
-          case (seq, (_, persist)) =>
-            persistActor ! persist
-        }
+
+  def updating(requester: ActorRef, pcxl: akka.actor.Cancellable, ucxl: akka.actor.Cancellable): Receive = {
+
+    case Persisted(key, id) =>
+      primaryPersisted = true
+      pcxl.cancel
+      self ! id
+
+    case Replicated(key, id) =>
+      replicators -= sender
+      self ! id
+
+    case id: Long =>
+      println
+      println("replicators.size = " + replicators.size)
+      if (primaryPersisted && replicators.isEmpty) {
+        println
+        println("Doing right thing")
+        requester ! OperationAck(id)
+        ucxl.cancel
+        context become leader
       }
+  }
+
+  val leader: Receive = {
 
     case Replicas(replicas) =>
-      replicas filter (rep => !secondaries.contains(rep)) foreach {
+      replicas filter (rep => !secondaries.contains(rep) && rep != self) foreach {
         case af: ActorRef =>
           val newReplicator = context.actorOf(Props(new Replicator(af)))
           secondaries += af -> newReplicator
@@ -92,10 +111,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case Insert(key, value, id) =>
       try {
         kv += key -> value
-        val p = Persist(key, Some(value), id)
-        persistActor ! p
-        persistAcks += id -> (sender, p)
-        cancellables += id -> context.system.scheduler.schedule(1000 millis, 1 seconds, sender, OperationFailed(id))
+        replicators foreach (_ ! Replicate(key, Some(value), id))
+        val persistCXL = context.system.scheduler.schedule(100 millis, 100 millis, persistActor, Persist(key, Some(value), id))
+        val updateCXL = context.system.scheduler.scheduleOnce(1 seconds, sender, OperationFailed(id))
+        context become updating(sender, persistCXL, updateCXL)
       } catch {
         case e: Exception => sender ! OperationFailed(id)
       }
@@ -103,29 +122,16 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case Remove(key, id) =>
       try {
         kv -= key
-        val p = Persist(key, None, id)
-        persistActor ! p
-        persistAcks += id -> (sender, p)
-        cancellables += id -> context.system.scheduler.schedule(1000 millis, 1 seconds, sender, OperationFailed(id))
+        replicators foreach (_ ! Replicate(key, None, id))
+        val persistCXL = context.system.scheduler.schedule(100 millis, 100 millis, persistActor, Persist(key, None, id))
+        val updateCXL = context.system.scheduler.scheduleOnce(1 seconds, sender, OperationFailed(id))
+        context become updating(sender, persistCXL, updateCXL)
       } catch {
         case e: Exception => sender ! OperationFailed(id)
       }
 
     case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
 
-    case Persisted(key, id) =>
-      cancellables.get(id) match {
-        case Some(x) =>
-          x.cancel()
-          cancellables -= id
-        case None =>
-      }
-      persistAcks.get(id) match {
-        case Some((sender, _)) =>
-          sender ! OperationAck(id)
-          persistAcks -= id
-        case None =>
-      }
   }
 
   /* TODO Behavior for the replica role. */
