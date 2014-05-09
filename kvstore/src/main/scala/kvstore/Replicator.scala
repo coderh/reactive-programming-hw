@@ -53,16 +53,18 @@ class Replicator(val replica: ActorRef) extends Actor {
       }
 
     case replic @ Replicate(key, valueOption, id) =>
-      
       val seq = nextSeq
       acks += seq -> (sender, replic)
       replica ! Snapshot(key, valueOption, seq)
 
     case SnapshotAck(key, seq) =>
-      
-      val (sender, replic) = acks(seq)
-      sender ! Replicated(key, replic.id)
-      acks -= seq
+      acks.get(seq) match {
+        case Some((sender, replic)) =>
+          sender ! Replicated(key, replic.id)
+          acks -= seq
+        case None =>
+      }
+
   }
 
 }

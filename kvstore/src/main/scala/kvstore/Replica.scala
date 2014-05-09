@@ -58,6 +58,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   arbiter ! Join
   val persistActor = context.actorOf(persistenceProps)
 
+  // Supervisor
+
   override val supervisorStrategy = OneForOneStrategy() {
     case _: PersistenceException => Restart
   }
@@ -69,7 +71,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   override def postStop() = tick.cancel()
 
   var persistAcks = Map.empty[Long, (ActorRef, Persist)]
-  var cancellables = Map.empty[Long, akka.actor.Cancellable]
 
   var primaryPersisted: Boolean = false
 
@@ -77,7 +78,17 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   var opsQueue = Queue.empty[(ActorRef, Operation)]
 
-  def updatingKV(requester: ActorRef, pcxl: akka.actor.Cancellable, ucxl: akka.actor.Cancellable, op: Operation): Receive = {
+  def timeOutHandler(key: String, id: Long, valueOption: Option[String]) = {
+    // wait for primary's local persistence
+    val persistCancellable = context.system.scheduler.schedule(100 millis, 100 millis, persistActor, Persist(key, valueOption, id))
+
+    // wait for all secondaries to complete their persistence
+    val updateCancellable = context.system.scheduler.scheduleOnce(1 seconds, sender, OperationFailed(id))
+
+    (persistCancellable, updateCancellable)
+  }
+
+  def updatingKV(requester: ActorRef, persistCancellable: akka.actor.Cancellable, updateCancellable: akka.actor.Cancellable, op: Operation): Receive = {
 
     case Replicas(replicas) =>
       secondaries.keys filter (rep => !replicas.contains(rep) && rep != self) foreach {
@@ -85,18 +96,12 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
           val removedReplicator = secondaries(af)
           replicators -= removedReplicator
           context stop removedReplicator
-          if (primaryPersisted && replicators.isEmpty) { // when all replication done
-            requester ! OperationAck(op.id)
-            replicators = secondaries.values.toSet
-            primaryPersisted = false
-            ucxl.cancel
-            context become leader
-          }
+          self ! op.id
       }
 
     case Persisted(key, id) =>
       primaryPersisted = true
-      pcxl.cancel
+      persistCancellable.cancel
       self ! id
 
     case Replicated(key, id) =>
@@ -108,9 +113,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case id: Long =>
       if (primaryPersisted && replicators.isEmpty) { // when all replication done
         requester ! OperationAck(id)
+        // reset primary state
         replicators = secondaries.values.toSet
         primaryPersisted = false
-        ucxl.cancel
+        updateCancellable.cancel
         context become leader
       }
   }
@@ -137,26 +143,16 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       }
 
     case ins @ Insert(key, value, id) =>
-      try {
-        kv += key -> value
-        val persistCXL = context.system.scheduler.schedule(100 millis, 100 millis, persistActor, Persist(key, Some(value), id))
-        val updateCXL = context.system.scheduler.scheduleOnce(1 seconds, sender, OperationFailed(id))
-        replicators foreach (_ ! Replicate(key, Some(value), id))
-        context become updatingKV(sender, persistCXL, updateCXL, ins)
-      } catch {
-        case e: Exception => sender ! OperationFailed(id)
-      }
+      kv += key -> value
+      val (persistCancellable, updateCancellable) = timeOutHandler(key, id, Some(value))
+      replicators foreach (_ ! Replicate(key, Some(value), id))
+      context become updatingKV(sender, persistCancellable, updateCancellable, ins)
 
     case rm @ Remove(key, id) =>
-      try {
-        kv -= key
-        replicators foreach (_ ! Replicate(key, None, id))
-        val persistCXL = context.system.scheduler.schedule(100 millis, 100 millis, persistActor, Persist(key, None, id))
-        val updateCXL = context.system.scheduler.scheduleOnce(1 seconds, sender, OperationFailed(id))
-        context become updatingKV(sender, persistCXL, updateCXL, rm)
-      } catch {
-        case e: Exception => sender ! OperationFailed(id)
-      }
+      kv -= key
+      val (persistCancellable, updateCancellable) = timeOutHandler(key, id, None)
+      replicators foreach (_ ! Replicate(key, None, id))
+      context become updatingKV(sender, persistCancellable, updateCancellable, rm)
 
     case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
   }
@@ -170,26 +166,23 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
             persistActor ! persist
         }
       }
+
     case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
+
     case Snapshot(key, valueOption, seq) =>
       if (seq == expectedSeq) {
-        try {
-          valueOption match {
-            case Some(v) => kv += key -> v
-            case None => kv -= key
-          }
-          implicit val timeout = Timeout(1 seconds)
-          val f = persistActor ? Persist(key, valueOption, seq)
-          f pipeTo self
-          persistAcks += seq -> (sender, Persist(key, valueOption, seq))
-          expectedSeq = scala.math.max(seq + 1, expectedSeq)
-        } catch {
-          case e: Exception => throw e
+        valueOption match {
+          case Some(v) => kv += key -> v
+          case None => kv -= key
         }
+        persistActor ! Persist(key, valueOption, seq)
+        persistAcks += seq -> (sender, Persist(key, valueOption, seq))
+        expectedSeq = scala.math.max(seq + 1, expectedSeq)
       } else if (seq < expectedSeq) {
         sender ! SnapshotAck(key, seq)
         expectedSeq = scala.math.max(seq + 1, expectedSeq)
       }
+
     case Persisted(key, seq) =>
       persistAcks.get(seq) match {
         case Some((replicator, persist)) =>
@@ -197,7 +190,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
           persistAcks -= seq
         case None =>
       }
-    case _: akka.actor.Status.Failure => println("Timeout \n\n\n")
 
   }
 
