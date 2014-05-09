@@ -75,7 +75,24 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   /* TODO Behavior for  the leader role. */
 
-  def updating(requester: ActorRef, pcxl: akka.actor.Cancellable, ucxl: akka.actor.Cancellable): Receive = {
+  var opsQueue = Queue.empty[(ActorRef, Operation)]
+
+  def updatingKV(requester: ActorRef, pcxl: akka.actor.Cancellable, ucxl: akka.actor.Cancellable, op: Operation): Receive = {
+
+    case Replicas(replicas) =>
+      secondaries.keys filter (rep => !replicas.contains(rep) && rep != self) foreach {
+        case af: ActorRef =>
+          val removedReplicator = secondaries(af)
+          replicators -= removedReplicator
+          context stop removedReplicator
+          if (primaryPersisted && replicators.isEmpty) { // when all replication done
+            requester ! OperationAck(op.id)
+            replicators = secondaries.values.toSet
+            primaryPersisted = false
+            ucxl.cancel
+            context become leader
+          }
+      }
 
     case Persisted(key, id) =>
       primaryPersisted = true
@@ -83,55 +100,65 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       self ! id
 
     case Replicated(key, id) =>
-      replicators -= sender
-      self ! id
+      if (id >= 0) {
+        replicators -= sender
+        self ! id
+      }
 
     case id: Long =>
-      println
-      println("replicators.size = " + replicators.size)
-      if (primaryPersisted && replicators.isEmpty) {
-        println
-        println("Doing right thing")
+      if (primaryPersisted && replicators.isEmpty) { // when all replication done
         requester ! OperationAck(id)
+        replicators = secondaries.values.toSet
+        primaryPersisted = false
         ucxl.cancel
         context become leader
       }
   }
 
   val leader: Receive = {
-
     case Replicas(replicas) =>
       replicas filter (rep => !secondaries.contains(rep) && rep != self) foreach {
         case af: ActorRef =>
           val newReplicator = context.actorOf(Props(new Replicator(af)))
           secondaries += af -> newReplicator
           replicators += newReplicator
+          //context become changingMembership(kv.size)
+          kv foreach {
+            case (key, value) =>
+              newReplicator ! Replicate(key, Some(value), -1)
+          }
       }
 
-    case Insert(key, value, id) =>
+      secondaries.keys filter (rep => !replicas.contains(rep) && rep != self) foreach {
+        case af: ActorRef =>
+          val removedReplicator = secondaries(af)
+          replicators -= removedReplicator
+          context stop removedReplicator
+      }
+
+    case ins @ Insert(key, value, id) =>
       try {
         kv += key -> value
-        replicators foreach (_ ! Replicate(key, Some(value), id))
         val persistCXL = context.system.scheduler.schedule(100 millis, 100 millis, persistActor, Persist(key, Some(value), id))
         val updateCXL = context.system.scheduler.scheduleOnce(1 seconds, sender, OperationFailed(id))
-        context become updating(sender, persistCXL, updateCXL)
+        replicators foreach (_ ! Replicate(key, Some(value), id))
+        context become updatingKV(sender, persistCXL, updateCXL, ins)
       } catch {
         case e: Exception => sender ! OperationFailed(id)
       }
 
-    case Remove(key, id) =>
+    case rm @ Remove(key, id) =>
       try {
         kv -= key
         replicators foreach (_ ! Replicate(key, None, id))
         val persistCXL = context.system.scheduler.schedule(100 millis, 100 millis, persistActor, Persist(key, None, id))
         val updateCXL = context.system.scheduler.scheduleOnce(1 seconds, sender, OperationFailed(id))
-        context become updating(sender, persistCXL, updateCXL)
+        context become updatingKV(sender, persistCXL, updateCXL, rm)
       } catch {
         case e: Exception => sender ! OperationFailed(id)
       }
 
     case Get(key, id) => sender ! GetResult(key, kv.get(key), id)
-
   }
 
   /* TODO Behavior for the replica role. */
