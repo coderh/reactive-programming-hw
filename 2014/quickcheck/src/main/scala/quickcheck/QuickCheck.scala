@@ -14,18 +14,22 @@ abstract class QuickCheckHeap extends Properties("Heap") with IntHeap {
     findMin(h) == a
   }
 
+  // If you insert any two elements into an empty heap, 
+  // finding the minimum of the resulting heap should get the smallest of the two elements back.
   property("min2") = forAll { (a: Int, b: Int) =>
     val h = insert(b, insert(a, empty))
     findMin(h) == List(a, b).min
   }
 
+  // If you insert an element into an empty heap, then delete the minimum, 
+  // the resulting heap should be empty.
   property("min3") = forAll { a: Int =>
     deleteMin(insert(a, empty)) == empty
   }
 
   lazy val genHeap: Gen[H] = for {
     v <- arbitrary[Int]
-    h <- oneOf(genHeap, const(empty))
+    h <- oneOf(genHeap, empty)
   } yield insert(v, h)
 
   property("gen1") = forAll { (h: H) =>
@@ -39,7 +43,7 @@ abstract class QuickCheckHeap extends Properties("Heap") with IntHeap {
     case h => findMin(h) :: sortHeap(deleteMin(h))
   }
 
-  // Given any heap,
+  // Given any heap, 
   // you should get a sorted sequence of elements when continually finding and deleting minima.
   property("gen2") = forAll { (h: H) =>
     val out = sortHeap(h)
